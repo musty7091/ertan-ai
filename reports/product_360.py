@@ -3,12 +3,14 @@ import streamlit as st
 
 from core.db import query_df
 from core.formatting import format_date, format_number, format_percent, format_tl, safe_float
+from core.config import get_excluded_sale_header_ind, get_report_date_range, get_report_year
 from core.sql_loader import load_sql
 
 
 def run_product_360(conn, barkod: str) -> pd.DataFrame:
     sql = load_sql("product_360_2026.sql")
-    return query_df(conn, sql, [barkod])
+    baslangic, bitis = get_report_date_range()
+    return query_df(conn, sql, [barkod, baslangic, bitis, get_excluded_sale_header_ind()])
 
 
 def render_product_360(df: pd.DataFrame):
@@ -25,7 +27,7 @@ def render_product_360(df: pd.DataFrame):
         f"Marka: {row['Marka']}"
     )
 
-    st.markdown("### 2026 Ürün 360")
+    st.markdown(f"### {get_report_year()} Ürün 360")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Satış Cirosu KDV Dahil", format_tl(row["NetSatisKdvDahil"]))

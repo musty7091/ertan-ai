@@ -1,7 +1,9 @@
 DECLARE @AltKategori NVARCHAR(100) = ?;
 DECLARE @Limit INT = ?;
-DECLARE @Baslangic DATE = '2026-01-01';
-DECLARE @Bitis DATE = '2027-01-01';
+DECLARE @Baslangic DATE = ?;
+DECLARE @Bitis DATE = ?;
+-- Hatali/mukerrer satis entegrasyon basligi; raporlardan dislanir (config: EXCLUDED_SALE_HEADER_IND)
+DECLARE @HaricIND INT = ?;
 
 WITH Urunler AS (
     SELECT
@@ -30,7 +32,7 @@ Satis AS (
     INNER JOIN Urunler u ON h.STOKNO = u.StokInd
     WHERE b.TARIH >= @Baslangic
       AND b.TARIH < @Bitis
-      AND b.IND <> 166576
+      AND b.IND <> @HaricIND
       AND LTRIM(RTRIM(b.FTIPI)) IN ('FIS', 'FATURA', 'G.PUSULA')
     GROUP BY u.StokInd
 ),
@@ -40,7 +42,7 @@ Alis AS (
         u.StokInd,
         SUM(CASE WHEN ISNULL(b.IADE, 0) = 1 THEN -h.MIKTAR ELSE h.MIKTAR END) AS NetAlisMiktari,
         SUM(CASE WHEN ISNULL(b.IADE, 0) = 1 THEN -h.GERCEKTOPLAM ELSE h.GERCEKTOPLAM END) AS NetAlisKdvHaric,
-        SUM(CASE WHEN ISNULL(b.IADE, 0) = 1 THEN -(h.GERCEKTOPLAM + ISNULL(h.KDVTUTARI, 0)) ELSE h.GERCEKTOPLAM + ISNULL(h.KDVTUTARI, 0) END) AS NetAlisKdvDahil,
+        SUM(CASE WHEN ISNULL(b.IADE, 0) = 1 THEN -(CASE WHEN ISNULL(h.KDVTUTARI, 0) <> 0 THEN h.GERCEKTOPLAM + h.KDVTUTARI ELSE h.GERCEKTOPLAM * (1 + ISNULL(h.KDV, 0) / 100.0) END) ELSE CASE WHEN ISNULL(h.KDVTUTARI, 0) <> 0 THEN h.GERCEKTOPLAM + h.KDVTUTARI ELSE h.GERCEKTOPLAM * (1 + ISNULL(h.KDV, 0) / 100.0) END END) AS NetAlisKdvDahil,
         SUM(CASE WHEN ISNULL(b.IADE, 0) = 0 AND h.MIKTAR > 0 AND (
             ISNULL(h.GERCEKTOPLAM, 0) = 0
             OR ISNULL(h.ISK1, 0) = 100 OR ISNULL(h.ISK2, 0) = 100 OR ISNULL(h.ISK3, 0) = 100

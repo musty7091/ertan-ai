@@ -3,6 +3,7 @@ import streamlit as st
 
 from core.db import query_df
 from core.formatting import format_number, format_percent, format_tl
+from core.config import get_excluded_sale_header_ind
 from core.sql_loader import load_sql
 
 
@@ -26,7 +27,7 @@ NUMERIC_COLUMNS = [
 
 def run_product_yearly(conn, barkod: str) -> pd.DataFrame:
     sql = load_sql("product_yearly_sales_purchase.sql")
-    return query_df(conn, sql, [barkod])
+    return query_df(conn, sql, [barkod, get_excluded_sale_header_ind()])
 
 
 def prepare_numeric_df(df: pd.DataFrame) -> pd.DataFrame:

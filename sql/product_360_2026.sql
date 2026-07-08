@@ -1,6 +1,8 @@
 DECLARE @Barkod NVARCHAR(50) = ?;
-DECLARE @Baslangic DATE = '2026-01-01';
-DECLARE @Bitis DATE = '2027-01-01';
+DECLARE @Baslangic DATE = ?;
+DECLARE @Bitis DATE = ?;
+-- Hatali/mukerrer satis entegrasyon basligi; raporlardan dislanir (config: EXCLUDED_SALE_HEADER_IND)
+DECLARE @HaricIND INT = ?;
 
 WITH Urun AS (
     SELECT TOP 1
@@ -34,7 +36,7 @@ SatisHam AS (
         ON h.STOKNO = u.StokInd
     WHERE b.TARIH >= @Baslangic
       AND b.TARIH <  @Bitis
-      AND b.IND <> 166576
+      AND b.IND <> @HaricIND
       AND LTRIM(RTRIM(b.FTIPI)) IN ('FIS', 'FATURA', 'G.PUSULA')
 ),
 
@@ -69,8 +71,8 @@ AlisHam AS (
         h.FIYATI,
         h.AFIYATI,
         h.GERCEKTOPLAM AS AlisKdvHaric,
-        ISNULL(h.KDVTUTARI, 0) AS AlisKdvTutari,
-        h.GERCEKTOPLAM + ISNULL(h.KDVTUTARI, 0) AS AlisKdvDahil,
+        CASE WHEN ISNULL(h.KDVTUTARI, 0) <> 0 THEN h.KDVTUTARI ELSE h.GERCEKTOPLAM * (ISNULL(h.KDV, 0) / 100.0) END AS AlisKdvTutari,
+        CASE WHEN ISNULL(h.KDVTUTARI, 0) <> 0 THEN h.GERCEKTOPLAM + h.KDVTUTARI ELSE h.GERCEKTOPLAM * (1 + ISNULL(h.KDV, 0) / 100.0) END AS AlisKdvDahil,
         ISNULL(h.ISK1, 0) AS ISK1,
         ISNULL(h.ISK2, 0) AS ISK2,
         ISNULL(h.ISK3, 0) AS ISK3,
@@ -153,7 +155,7 @@ SELECT
     CASE WHEN ISNULL(a.NetAlisMiktari, 0) <> 0 THEN s.NetSatisKdvHaric - (s.NetSatisMiktari * (a.NetAlisKdvHaric / a.NetAlisMiktari)) ELSE NULL END AS TahminiBrutKarKdvHaric_Efektif,
     CASE WHEN (ISNULL(a.NetAlisMiktari, 0) - ISNULL(a.BedelsizMiktar, 0)) <> 0 THEN s.NetSatisKdvHaric - (s.NetSatisMiktari * (a.NetAlisKdvHaric / (a.NetAlisMiktari - a.BedelsizMiktar))) ELSE NULL END AS TahminiBrutKarKdvHaric_Bedelli,
     CASE WHEN ISNULL(s.NetSatisKdvHaric, 0) <> 0 AND ISNULL(a.NetAlisMiktari, 0) <> 0 THEN (s.NetSatisKdvHaric - (s.NetSatisMiktari * (a.NetAlisKdvHaric / a.NetAlisMiktari))) / s.NetSatisKdvHaric * 100 ELSE NULL END AS BrutKarOraniKdvHaric_Efektif,
-    CASE WHEN ISNULL(s.NetSatisKdvHaric, 0) <> 0 AND (ISNULL(a.NetAlisMiktari, 0) - ISNULL(a.BedelsizMiktar, 0)) <> 0 THEN (s.NetSatisKdvHaric - (s.NetSatisMiktari * (a.NetAlisKdvHaric / (a.NetAlisMiktari - a.BedelsizMiktar))) / s.NetSatisKdvHaric * 100 ELSE NULL END AS BrutKarOraniKdvHaric_Bedelli,
+    CASE WHEN ISNULL(s.NetSatisKdvHaric, 0) <> 0 AND (ISNULL(a.NetAlisMiktari, 0) - ISNULL(a.BedelsizMiktar, 0)) <> 0 THEN (s.NetSatisKdvHaric - (s.NetSatisMiktari * (a.NetAlisKdvHaric / (a.NetAlisMiktari - a.BedelsizMiktar)))) / s.NetSatisKdvHaric * 100 ELSE NULL END AS BrutKarOraniKdvHaric_Bedelli,
     ISNULL(s.NetSatisMiktari, 0) - ISNULL(a.NetAlisMiktari, 0) AS SatisAlisMiktarFarki
 FROM Urun u
 CROSS JOIN Satis s
