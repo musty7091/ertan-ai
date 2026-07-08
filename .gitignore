@@ -1,0 +1,11 @@
+﻿.venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.zip
+app_backup.py
+.streamlit/secrets.toml
+.vscode/
+.idea/
