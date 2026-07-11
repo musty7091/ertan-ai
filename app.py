@@ -1,315 +1,139 @@
+import re
 import streamlit as st
-
-from core.config import get_report_year
+from core.config import get_report_date_range, get_report_year
 from core.db import get_connection
 from core.intent import parse_question
-from reports.cards import (
-    build_category_card,
-    build_product_360_card,
-    build_product_yearly_card,
-    render_card,
-)
+from reports.cards import build_category_card, build_product_360_card, build_product_yearly_card, render_card
 from reports.category_profit import run_category_profit
 from reports.daily_profit import render_daily_profit, run_daily_profit
 from reports.period_profit import run_period_profit
 from reports.product_360 import run_product_360
 from reports.product_search import find_product_cached, fuzzy_find
 from reports.product_yearly import run_product_yearly
+from reports.stock_inactivity import render_stock_inactivity, run_stock_inactivity
+from reports.supplier_profit import render_supplier_profit, run_supplier_profit
 
+APP_VERSION='v3.12.1_app_syntax_fix'
+st.set_page_config(page_title='Ertan Market Veri Asistanı', page_icon='📊', layout='wide', initial_sidebar_state='collapsed')
+st.markdown('<style>#MainMenu, footer{visibility:hidden}.block-container{max-width:96vw!important;padding-top:2rem!important;padding-left:1.5rem!important;padding-right:1.5rem!important;padding-bottom:6rem!important}[data-testid="stMetricValue"]{font-size:1.08rem}[data-testid="stMetricLabel"]{font-size:.72rem}[data-testid="stDataFrame"]{width:100%!important}</style>', unsafe_allow_html=True)
+if st.session_state.get('_app_version')!=APP_VERSION:
+    st.session_state.clear(); st.session_state['_app_version']=APP_VERSION
+st.session_state.setdefault('history',[]); st.session_state.setdefault('pending_picker',None)
 
-APP_VERSION = "v3.11_pdf_export"
+def add_user(t): st.session_state.history.append({'role':'user','text':t})
+def add_text(t,level='info'): st.session_state.history.append({'role':'assistant','text':t,'level':level})
+def add_card(c): st.session_state.history.append({'role':'assistant','card':c})
+def add_profit(df,label): st.session_state.history.append({'role':'assistant','profit_report':{'df':df,'label':label}})
+def add_stock(df,days): st.session_state.history.append({'role':'assistant','stock_report':{'df':df,'days':days}})
+def add_supplier(df,label): st.session_state.history.append({'role':'assistant','supplier_report':{'df':df,'label':label}})
 
+def is_stock_q(q):
+    s=q.lower(); return ('satmayan' in s or 'satılmayan' in s or 'satilmayan' in s or 'hareketsiz' in s or 'stokta çok duran' in s or 'stokta cok duran' in s)
+def days_from_q(q):
+    m=re.search(r'son\s+(\d{1,3})\s*g[uü]n', q.lower());
+    if m: return int(m.group(1))
+    if '60' in q: return 60
+    if '90' in q or 'çok duran' in q.lower() or 'cok duran' in q.lower(): return 90
+    return 30
+def is_supplier_q(q):
+    s=q.lower(); return ('tedarikçi' in s or 'tedarikci' in s or 'hangi tedarikçiden' in s or 'hangi tedarikciden' in s or 'yüksek ciro' in s or 'yuksek ciro' in s)
 
-st.set_page_config(
-    page_title="Ertan Market Veri Asistanı",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
-
-st.markdown(
-    """
-    <style>
-    #MainMenu, footer {visibility: hidden;}
-
-    .block-container {
-        max-width: 96vw !important;
-        padding-top: 2rem !important;
-        padding-left: 1.5rem !important;
-        padding-right: 1.5rem !important;
-        padding-bottom: 6rem !important;
-    }
-
-    [data-testid="stMetricValue"] { font-size: 1.08rem; }
-    [data-testid="stMetricLabel"] { font-size: 0.72rem; }
-    [data-testid="stDataFrame"] { width: 100% !important; }
-
-    div[data-testid="stVerticalBlock"] { gap: 0.75rem; }
-
-    @media (max-width: 900px) {
-        .block-container {
-            max-width: 100vw !important;
-            padding-left: 0.75rem !important;
-            padding-right: 0.75rem !important;
-        }
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ---------- durum ----------
-if st.session_state.get("_app_version") != APP_VERSION:
-    st.session_state.clear()
-    st.session_state["_app_version"] = APP_VERSION
-
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "pending_picker" not in st.session_state:
-    st.session_state.pending_picker = None
-
-
-def add_user(text: str):
-    st.session_state.history.append({"role": "user", "text": text})
-
-
-def add_text(text: str, level: str = "info"):
-    st.session_state.history.append({"role": "assistant", "text": text, "level": level})
-
-
-def add_card(card: dict):
-    st.session_state.history.append({"role": "assistant", "card": card})
-
-
-def add_profit_report(df, report_label: str):
-    st.session_state.history.append(
-        {
-            "role": "assistant",
-            "profit_report": {
-                "df": df,
-                "report_label": report_label,
-            },
-        }
-    )
-
-
-def render_pdf_download(df, report_label: str):
+def pdf_profit(df,label):
     try:
         from reports.pdf_export import build_profit_pdf, safe_filename
-    except ModuleNotFoundError:
-        st.error(
-            "PDF oluşturmak için reportlab paketi gerekli. "
-            "PowerShell'de şu komutu çalıştır: pip install reportlab"
-        )
-        return
-    except Exception as exc:
-        st.error(f"PDF modülü yüklenemedi: {exc}")
-        return
-
+        st.download_button('📄 PDF raporu indir', build_profit_pdf(df,label), safe_filename(label), 'application/pdf', type='primary', width='stretch')
+    except Exception as e: st.error(f'PDF oluşturulamadı: {e}')
+def pdf_stock(df,days):
     try:
-        pdf_bytes = build_profit_pdf(df, report_label)
-        st.download_button(
-            label="📄 PDF raporu indir",
-            data=pdf_bytes,
-            file_name=safe_filename(report_label),
-            mime="application/pdf",
-            type="primary",
-            width="stretch",
-        )
-    except Exception as exc:
-        st.error(f"PDF oluşturulamadı: {exc}")
+        from reports.simple_pdf import build_stock_pdf, safe_filename
+        label=f'Son {days} gündür satmayan ürünler'; st.download_button('📄 Satmayan stok PDF indir', build_stock_pdf(df,label), safe_filename(label,'ertan_satmayan_stok'), 'application/pdf', type='primary', width='stretch')
+    except Exception as e: st.error(f'PDF oluşturulamadı: {e}')
+def pdf_supplier(df,label):
+    try:
+        from reports.simple_pdf import build_supplier_pdf, safe_filename
+        st.download_button('📄 Tedarikçi PDF indir', build_supplier_pdf(df,label), safe_filename(label,'ertan_tedarikci_karlilik'), 'application/pdf', type='primary', width='stretch')
+    except Exception as e: st.error(f'PDF oluşturulamadı: {e}')
 
-
-# ---------- rapor calistirma ----------
-def run_report_for_barcode(conn, report_type: str, barkod: str):
-    if report_type == "product_yearly":
-        df = run_product_yearly(conn, barkod)
-        if df.empty:
-            add_text("Bu ürün için yıllık veri bulunamadı.", "warning")
-            return
-        add_card(build_product_yearly_card(df))
+def run_report_for_barcode(conn, rt, barkod):
+    if rt=='product_yearly':
+        df=run_product_yearly(conn,barkod); add_card(build_product_yearly_card(df)) if not df.empty else add_text('Bu ürün için yıllık veri bulunamadı.','warning')
     else:
-        df = run_product_360(conn, barkod)
-        if df.empty:
-            add_text("Bu ürün için rapor verisi bulunamadı.", "warning")
-            return
-        add_card(build_product_360_card(df))
+        df=run_product_360(conn,barkod); add_card(build_product_360_card(df)) if not df.empty else add_text('Bu ürün için rapor verisi bulunamadı.','warning')
 
-
-def process_question(question: str):
-    conn = None
+def process_question(q):
+    conn=None
     try:
-        intent = parse_question(question)
-        conn = get_connection()
-
-        if intent.report_type == "period_profit":
-            if not intent.start_date or not intent.end_date:
-                add_text(
-                    "Tarih aralığını anlayamadım. Örnek: *2026 Haziran ayı net karlılık* "
-                    "veya *01.06.2026 - 30.06.2026 net karlılık*",
-                    "warning",
-                )
-                return
-            df = run_period_profit(conn, intent.start_date, intent.end_date)
-            if df.empty:
-                add_text(f"{intent.report_label or intent.start_date} için satış verisi bulunamadı.", "warning")
-                return
-            add_profit_report(df, intent.report_label or f"{intent.start_date} - {intent.end_date}")
-            return
-
-        if intent.report_type == "daily_profit":
-            if not intent.report_date:
-                add_text("Tarih anlayamadım. Örnek: *08.07.2026 net kârlılık*", "warning")
-                return
-            df = run_daily_profit(conn, intent.report_date)
-            if df.empty:
-                add_text(f"{intent.report_date} tarihi için satış verisi bulunamadı.", "warning")
-                return
-            add_profit_report(df, intent.report_date)
-            return
-
-        if intent.report_type == "category_profit":
-            if not intent.category:
-                add_text("Kategori anlayamadım. Örnek: *Whiskey kategorisinde en kârlı ürünler*", "warning")
-                return
-            df = run_category_profit(conn, intent.category, limit=50)
-            if df.empty:
-                add_text(f"{intent.category} kategorisi için sonuç bulunamadı.", "warning")
-                return
-            add_card(build_category_card(df, intent.category))
-            return
-
-        products = find_product_cached(
-            conn,
-            barcode=intent.barcode,
-            product_text=intent.product_text,
-        )
-
-        fuzzy_used = False
-        if products.empty and intent.product_text:
-            products = fuzzy_find(conn, intent.product_text)
-            fuzzy_used = not products.empty
-
-        if products.empty:
-            add_text("Ürün bulamadım. Barkodla dener misin? Örnek: *5099873090183 analiz et*", "warning")
-            return
-
-        if len(products) > 1:
-            if fuzzy_used:
-                add_text("Tam eşleşme yok ama benzer ürünler buldum. Aşağıdan seç:")
-            st.session_state.pending_picker = {
-                "report_type": intent.report_type,
-                "products": products,
-            }
-            return
-
-        run_report_for_barcode(conn, intent.report_type, products.iloc[0]["Barkod"])
-
-    except Exception as exc:
-        add_text(f"Bir hata oluştu: `{exc}`", "warning")
+        intent=parse_question(q); conn=get_connection()
+        if is_stock_q(q):
+            days=days_from_q(q); add_stock(run_stock_inactivity(conn,days), days); return
+        if is_supplier_q(q):
+            if getattr(intent,'start_date',None) and getattr(intent,'end_date',None): start,end,label=intent.start_date,intent.end_date,intent.report_label
+            else: start,end=get_report_date_range(); label=f'{get_report_year()} yılı'
+            df=run_supplier_profit(conn,start,end); add_supplier(df,label) if not df.empty else add_text(f'{label} için tedarikçi kârlılık verisi bulunamadı.','warning'); return
+        if intent.report_type=='period_profit':
+            df=run_period_profit(conn,intent.start_date,intent.end_date); add_profit(df,intent.report_label or f'{intent.start_date} - {intent.end_date}') if not df.empty else add_text('Bu dönem için satış verisi bulunamadı.','warning'); return
+        if intent.report_type=='daily_profit':
+            df=run_daily_profit(conn,intent.report_date); add_profit(df,intent.report_date) if not df.empty else add_text(f'{intent.report_date} tarihi için satış verisi bulunamadı.','warning'); return
+        if intent.report_type=='category_profit':
+            if not intent.category: add_text('Kategori anlayamadım.','warning'); return
+            df=run_category_profit(conn,intent.category,limit=50); add_card(build_category_card(df,intent.category)) if not df.empty else add_text(f'{intent.category} kategorisi için sonuç bulunamadı.','warning'); return
+        products=find_product_cached(conn, barcode=intent.barcode, product_text=intent.product_text)
+        if products.empty and intent.product_text: products=fuzzy_find(conn,intent.product_text)
+        if products.empty: add_text('Ürün bulamadım. Barkodla dener misin?','warning'); return
+        if len(products)>1: st.session_state.pending_picker={'report_type':intent.report_type,'products':products}; return
+        run_report_for_barcode(conn,intent.report_type,products.iloc[0]['Barkod'])
+    except Exception as e: add_text(f'Bir hata oluştu: `{e}`','warning')
     finally:
-        if conn is not None:
-            conn.close()
+        if conn is not None: conn.close()
 
-
-# ---------- baslik + kenar cubugu ----------
-st.title("📊 Ertan Market Veri Asistanı")
-st.caption(f"Rapor yılı: {get_report_year()} · Sohbet eder gibi sor, net cevap al.")
-
+st.title('📊 Ertan Market Veri Asistanı'); st.caption(f'Rapor yılı: {get_report_year()} · Sohbet eder gibi sor, net cevap al.')
 with st.sidebar:
-    st.header("Hızlı Sorular")
-    examples = [
-        "2026 haziran ayı net karlılık",
-        "01.06.2026 - 30.06.2026 net karlılık",
-        "08.07.2026 net kârlılık",
-        "2026-07-08 günlük kâr",
-        "5099873090183 analiz et",
-        "Jack Daniels 1LT analiz et",
-        "080432400395 son yıllar alış satış",
-        "Chivas 12 son yıllar",
-        "Whiskey kategorisinde en kârlı ürünler",
-        "Rakı kategorisinde en çok satanlar",
-    ]
-    selected_example = st.radio("Örnek seç:", examples, index=0)
-    if st.button("Örneği çalıştır", width="stretch"):
-        st.session_state["pending_question"] = selected_example
-
+    st.header('Hızlı Sorular')
+    examples=['2026 haziran ayı net karlılık','2026 haziran tedarikçi karlılık raporu','Hangi tedarikçi yüksek ciro ama düşük kâr getiriyor?','Son 30 gündür satmayan ürünler','Son 60 gündür satmayan ürünler','Son 90 gündür satmayan ürünler','Stokta çok duran ama satmayan ürünler','08.07.2026 net kârlılık','5099873090183 analiz et']
+    ex=st.radio('Örnek seç:',examples,index=0)
+    if st.button('Örneği çalıştır',width='stretch'): st.session_state['pending_question']=ex
     st.divider()
-    if st.button("🧹 Sohbeti temizle", width="stretch"):
-        st.session_state.history = []
-        st.session_state.pending_picker = None
-        st.rerun()
-    st.caption("Kâr referansı: KDV hariç satış − stok kartı bazlı maliyet.")
-
-
-# ---------- gecmisi ciz ----------
+    if st.button('🧹 Sohbeti temizle',width='stretch'): st.session_state.history=[]; st.session_state.pending_picker=None; st.rerun()
 for entry in st.session_state.history:
-    with st.chat_message(entry["role"]):
-        if "profit_report" in entry:
-            report = entry["profit_report"]
-            render_pdf_download(report["df"], report["report_label"])
-            render_daily_profit(
-                report["df"],
-                report["report_label"],
-                show_summary=True,
-            )
-        elif "daily_report" in entry:
-            # Eski history desteği
-            report = entry["daily_report"]
-            report_label = report.get("report_label") or report.get("report_date", "rapor")
-            render_pdf_download(report["df"], report_label)
-            render_daily_profit(
-                report["df"],
-                report_label,
-                show_summary=True,
-            )
-        elif "card" in entry:
-            render_card(entry["card"])
+    with st.chat_message(entry['role']):
+        if 'profit_report' in entry:
+            r = entry['profit_report']
+            pdf_profit(r['df'], r['label'])
+            render_daily_profit(r['df'], r['label'], show_summary=True)
+
+        elif 'stock_report' in entry:
+            r = entry['stock_report']
+            pdf_stock(r['df'], r['days'])
+            render_stock_inactivity(r['df'], r['days'])
+
+        elif 'supplier_report' in entry:
+            r = entry['supplier_report']
+            pdf_supplier(r['df'], r['label'])
+            render_supplier_profit(r['df'], r['label'])
+
+        elif 'card' in entry:
+            render_card(entry['card'])
+
         else:
-            if entry.get("level") == "warning":
-                st.warning(entry["text"])
+            if entry.get('level') == 'warning':
+                st.warning(entry['text'])
             else:
-                st.markdown(entry["text"])
-
-
-# ---------- urun secici ----------
-picker = st.session_state.pending_picker
+                st.markdown(entry['text'])
+picker=st.session_state.pending_picker
 if picker is not None:
-    with st.chat_message("assistant"):
-        st.markdown("**Birden fazla ürün bulundu.** Analiz edilecek ürünü seç:")
-        products = picker["products"]
-        options = [
-            f"{row.Barkod} | {row.UrunAdi} | {(row.AnaKategori or '')} / {(row.AltKategori or '')}"
-            for row in products.itertuples()
-        ]
-        selected = st.selectbox("Ürün", options, label_visibility="collapsed")
-        if st.button("Analiz et", type="primary"):
-            barkod = products.iloc[options.index(selected)]["Barkod"]
-            st.session_state.pending_picker = None
-            conn = None
-            try:
-                conn = get_connection()
-                run_report_for_barcode(conn, picker["report_type"], barkod)
-            except Exception as exc:
-                add_text(f"Bir hata oluştu: `{exc}`", "warning")
+    with st.chat_message('assistant'):
+        st.markdown('**Birden fazla ürün bulundu.** Analiz edilecek ürünü seç:')
+        products=picker['products']; opts=[f"{r.Barkod} | {r.UrunAdi} | {(r.AnaKategori or '')} / {(r.AltKategori or '')}" for r in products.itertuples()]
+        sel=st.selectbox('Ürün',opts,label_visibility='collapsed')
+        if st.button('Analiz et',type='primary'):
+            barkod=products.iloc[opts.index(sel)]['Barkod']; st.session_state.pending_picker=None
+            conn=None
+            try: conn=get_connection(); run_report_for_barcode(conn,picker['report_type'],barkod)
+            except Exception as e: add_text(f'Bir hata oluştu: `{e}`','warning')
             finally:
-                if conn is not None:
-                    conn.close()
+                if conn is not None: conn.close()
             st.rerun()
-
-
-# ---------- giris ----------
-question = st.chat_input("Örnek: 2026 Haziran ayı net karlılık")
-
-if "pending_question" in st.session_state:
-    question = st.session_state.pop("pending_question")
-
-if question:
-    add_user(question)
-    st.session_state.pending_picker = None
-    process_question(question)
-    st.rerun()
-
-if not st.session_state.history and picker is None:
-    st.info("Başlamak için tarih, tarih aralığı, ay, barkod, ürün adı veya kategori yaz. Örnek: *2026 Haziran ayı net karlılık*")
+q=st.chat_input('Örnek: Son 30 gündür satmayan ürünler')
+if 'pending_question' in st.session_state: q=st.session_state.pop('pending_question')
+if q: add_user(q); st.session_state.pending_picker=None; process_question(q); st.rerun()
+if not st.session_state.history and picker is None: st.info('Başlamak için stok, tedarikçi, tarih, ay, barkod veya ürün sorusu yaz.')
