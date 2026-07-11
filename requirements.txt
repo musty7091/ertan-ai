@@ -3,3 +3,4 @@ pandas
 pyodbc
 python-dotenv
 rapidfuzz
+reportlab

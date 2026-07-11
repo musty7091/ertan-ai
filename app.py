@@ -11,9 +11,13 @@ from reports.cards import (
 )
 from reports.category_profit import run_category_profit
 from reports.daily_profit import render_daily_profit, run_daily_profit
+from reports.period_profit import run_period_profit
 from reports.product_360 import run_product_360
 from reports.product_search import find_product_cached, fuzzy_find
 from reports.product_yearly import run_product_yearly
+
+
+APP_VERSION = "v3.11_pdf_export"
 
 
 st.set_page_config(
@@ -29,28 +33,18 @@ st.markdown(
     #MainMenu, footer {visibility: hidden;}
 
     .block-container {
-        max-width: 95vw !important;
+        max-width: 96vw !important;
         padding-top: 2rem !important;
-        padding-left: 2rem !important;
-        padding-right: 2rem !important;
+        padding-left: 1.5rem !important;
+        padding-right: 1.5rem !important;
         padding-bottom: 6rem !important;
     }
 
-    [data-testid="stMetricValue"] {
-        font-size: 1.15rem;
-    }
+    [data-testid="stMetricValue"] { font-size: 1.08rem; }
+    [data-testid="stMetricLabel"] { font-size: 0.72rem; }
+    [data-testid="stDataFrame"] { width: 100% !important; }
 
-    [data-testid="stMetricLabel"] {
-        font-size: 0.75rem;
-    }
-
-    [data-testid="stDataFrame"] {
-        width: 100% !important;
-    }
-
-    div[data-testid="stVerticalBlock"] {
-        gap: 0.75rem;
-    }
+    div[data-testid="stVerticalBlock"] { gap: 0.75rem; }
 
     @media (max-width: 900px) {
         .block-container {
@@ -66,6 +60,10 @@ st.markdown(
 
 
 # ---------- durum ----------
+if st.session_state.get("_app_version") != APP_VERSION:
+    st.session_state.clear()
+    st.session_state["_app_version"] = APP_VERSION
+
 if "history" not in st.session_state:
     st.session_state.history = []
 if "pending_picker" not in st.session_state:
@@ -84,18 +82,43 @@ def add_card(card: dict):
     st.session_state.history.append({"role": "assistant", "card": card})
 
 
-def add_daily_report(df, report_date: str):
-    # Günlük raporu kart/expander içine gömmüyoruz.
-    # Sekmeler doğrudan görünür olsun diye ayrı history tipi.
+def add_profit_report(df, report_label: str):
     st.session_state.history.append(
         {
             "role": "assistant",
-            "daily_report": {
+            "profit_report": {
                 "df": df,
-                "report_date": report_date,
+                "report_label": report_label,
             },
         }
     )
+
+
+def render_pdf_download(df, report_label: str):
+    try:
+        from reports.pdf_export import build_profit_pdf, safe_filename
+    except ModuleNotFoundError:
+        st.error(
+            "PDF oluşturmak için reportlab paketi gerekli. "
+            "PowerShell'de şu komutu çalıştır: pip install reportlab"
+        )
+        return
+    except Exception as exc:
+        st.error(f"PDF modülü yüklenemedi: {exc}")
+        return
+
+    try:
+        pdf_bytes = build_profit_pdf(df, report_label)
+        st.download_button(
+            label="📄 PDF raporu indir",
+            data=pdf_bytes,
+            file_name=safe_filename(report_label),
+            mime="application/pdf",
+            type="primary",
+            width="stretch",
+        )
+    except Exception as exc:
+        st.error(f"PDF oluşturulamadı: {exc}")
 
 
 # ---------- rapor calistirma ----------
@@ -120,6 +143,21 @@ def process_question(question: str):
         intent = parse_question(question)
         conn = get_connection()
 
+        if intent.report_type == "period_profit":
+            if not intent.start_date or not intent.end_date:
+                add_text(
+                    "Tarih aralığını anlayamadım. Örnek: *2026 Haziran ayı net karlılık* "
+                    "veya *01.06.2026 - 30.06.2026 net karlılık*",
+                    "warning",
+                )
+                return
+            df = run_period_profit(conn, intent.start_date, intent.end_date)
+            if df.empty:
+                add_text(f"{intent.report_label or intent.start_date} için satış verisi bulunamadı.", "warning")
+                return
+            add_profit_report(df, intent.report_label or f"{intent.start_date} - {intent.end_date}")
+            return
+
         if intent.report_type == "daily_profit":
             if not intent.report_date:
                 add_text("Tarih anlayamadım. Örnek: *08.07.2026 net kârlılık*", "warning")
@@ -128,7 +166,7 @@ def process_question(question: str):
             if df.empty:
                 add_text(f"{intent.report_date} tarihi için satış verisi bulunamadı.", "warning")
                 return
-            add_daily_report(df, intent.report_date)
+            add_profit_report(df, intent.report_date)
             return
 
         if intent.report_type == "category_profit":
@@ -182,6 +220,8 @@ st.caption(f"Rapor yılı: {get_report_year()} · Sohbet eder gibi sor, net ceva
 with st.sidebar:
     st.header("Hızlı Sorular")
     examples = [
+        "2026 haziran ayı net karlılık",
+        "01.06.2026 - 30.06.2026 net karlılık",
         "08.07.2026 net kârlılık",
         "2026-07-08 günlük kâr",
         "5099873090183 analiz et",
@@ -200,17 +240,28 @@ with st.sidebar:
         st.session_state.history = []
         st.session_state.pending_picker = None
         st.rerun()
-    st.caption("Kâr referansı: KDV hariç satış − KDV hariç alış maliyeti.")
+    st.caption("Kâr referansı: KDV hariç satış − stok kartı bazlı maliyet.")
 
 
 # ---------- gecmisi ciz ----------
 for entry in st.session_state.history:
     with st.chat_message(entry["role"]):
-        if "daily_report" in entry:
-            st.markdown("**🧾 Günlük Satış ve Maliyet Sağlık Kontrolü**")
+        if "profit_report" in entry:
+            report = entry["profit_report"]
+            render_pdf_download(report["df"], report["report_label"])
             render_daily_profit(
-                entry["daily_report"]["df"],
-                entry["daily_report"]["report_date"],
+                report["df"],
+                report["report_label"],
+                show_summary=True,
+            )
+        elif "daily_report" in entry:
+            # Eski history desteği
+            report = entry["daily_report"]
+            report_label = report.get("report_label") or report.get("report_date", "rapor")
+            render_pdf_download(report["df"], report_label)
+            render_daily_profit(
+                report["df"],
+                report_label,
                 show_summary=True,
             )
         elif "card" in entry:
@@ -249,7 +300,7 @@ if picker is not None:
 
 
 # ---------- giris ----------
-question = st.chat_input("Örnek: 08.07.2026 net kârlılık")
+question = st.chat_input("Örnek: 2026 Haziran ayı net karlılık")
 
 if "pending_question" in st.session_state:
     question = st.session_state.pop("pending_question")
@@ -261,4 +312,4 @@ if question:
     st.rerun()
 
 if not st.session_state.history and picker is None:
-    st.info("Başlamak için tarih, barkod, ürün adı veya kategori yaz. Örnek: *08.07.2026 net kârlılık*")
+    st.info("Başlamak için tarih, tarih aralığı, ay, barkod, ürün adı veya kategori yaz. Örnek: *2026 Haziran ayı net karlılık*")

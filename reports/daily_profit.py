@@ -44,6 +44,8 @@ def prepare_numeric_df(df: pd.DataFrame) -> pd.DataFrame:
     for column in NUMERIC_COLUMNS:
         if column in prepared.columns:
             prepared[column] = pd.to_numeric(prepared[column], errors="coerce")
+    prepared["AnaKategori"] = prepared["AnaKategori"].fillna("KATEGORİ YOK").replace("", "KATEGORİ YOK")
+    prepared["AltKategori"] = prepared["AltKategori"].fillna("ALT KATEGORİ YOK").replace("", "ALT KATEGORİ YOK")
     return prepared
 
 
@@ -90,7 +92,7 @@ def _format_display(df: pd.DataFrame) -> pd.DataFrame:
         if col in display.columns:
             display[col] = display[col].apply(format_percent)
 
-    rename_map = {
+    return display.rename(columns={
         "RaporTarihi": "Rapor Tarihi",
         "Barkod": "Barkod",
         "UrunAdi": "Ürün Adı",
@@ -124,9 +126,7 @@ def _format_display(df: pd.DataFrame) -> pd.DataFrame:
         "MaliyetEksikMi": "Maliyet Eksik Mi",
         "SupheliMaliyetMi": "Şüpheli Mi",
         "MaliyetSaglikDurumu": "Maliyet Sağlık Durumu",
-    }
-
-    return display.rename(columns=rename_map)
+    })
 
 
 def _show_table(df: pd.DataFrame, empty_message: str):
@@ -136,23 +136,15 @@ def _show_table(df: pd.DataFrame, empty_message: str):
         st.dataframe(_format_display(df), width="stretch")
 
 
-def _metric_money(value):
-    return format_tl(value if pd.notna(value) else None)
-
-
-def build_category_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Günlük satışları ana kategori bazında toplar."""
-    if df.empty:
+def _summary_from_group(d: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
+    if d.empty:
         return pd.DataFrame()
-
-    d = df.copy()
-    d["AnaKategori"] = d["AnaKategori"].fillna("KATEGORİ YOK").replace("", "KATEGORİ YOK")
 
     total_sales = d["NetSatisKdvHaric"].sum(skipna=True)
     total_profit = d["TahminiBrutKarKdvHaric"].sum(skipna=True)
 
     grouped = (
-        d.groupby("AnaKategori", dropna=False)
+        d.groupby(group_cols, dropna=False)
         .agg(
             UrunSayisi=("Barkod", "nunique"),
             SatisSatiri=("SatisSatirSayisi", "sum"),
@@ -170,12 +162,12 @@ def build_category_summary(df: pd.DataFrame) -> pd.DataFrame:
 
     loss_counts = (
         d.assign(ZararEdenUrun=(d["TahminiBrutKarKdvHaric"].fillna(0) < 0).astype(int))
-        .groupby("AnaKategori", dropna=False)["ZararEdenUrun"]
+        .groupby(group_cols, dropna=False)["ZararEdenUrun"]
         .sum()
         .reset_index()
     )
 
-    grouped = grouped.merge(loss_counts, on="AnaKategori", how="left")
+    grouped = grouped.merge(loss_counts, on=group_cols, how="left")
 
     grouped["SatisPayiYuzde"] = grouped["NetSatisKdvHaric"].apply(
         lambda v: (v / total_sales * 100) if total_sales else None
@@ -189,30 +181,31 @@ def build_category_summary(df: pd.DataFrame) -> pd.DataFrame:
     grouped["KarPayiYuzde"] = grouped["TahminiBrutKar"].apply(
         lambda v: (v / total_profit * 100) if total_profit else None
     )
-
     grouped["KontrolGereken"] = (
         grouped["MaliyetiOlmayanUrun"].fillna(0)
         + grouped["SupheliMaliyetliUrun"].fillna(0)
         + grouped["ZararEdenUrun"].fillna(0)
     )
 
-    return grouped.sort_values(
-        ["TahminiBrutKar", "NetSatisKdvHaric"],
-        ascending=[True, False],
-    ).reset_index(drop=True)
+    return grouped.sort_values(["NetSatisKdvHaric"], ascending=[False]).reset_index(drop=True)
 
 
-def _format_category_summary(df: pd.DataFrame) -> pd.DataFrame:
+def build_category_summary(df: pd.DataFrame) -> pd.DataFrame:
+    return _summary_from_group(df, ["AnaKategori"])
+
+
+def build_subcategory_summary(df: pd.DataFrame) -> pd.DataFrame:
+    return _summary_from_group(df, ["AnaKategori", "AltKategori"])
+
+
+def _format_group_summary(df: pd.DataFrame) -> pd.DataFrame:
     display = df.copy()
 
-    money_cols = [
-        "NetSatisKdvDahil",
-        "NetSatisKdvHaric",
-        "TahminiMaliyet",
-        "TahminiBrutKar",
-        "IadeKdvDahil",
-    ]
-    number_cols = [
+    for col in ["NetSatisKdvDahil", "NetSatisKdvHaric", "TahminiMaliyet", "TahminiBrutKar", "IadeKdvDahil"]:
+        if col in display.columns:
+            display[col] = display[col].apply(format_tl)
+
+    for col in [
         "UrunSayisi",
         "SatisSatiri",
         "NetSatisMiktari",
@@ -220,23 +213,17 @@ def _format_category_summary(df: pd.DataFrame) -> pd.DataFrame:
         "SupheliMaliyetliUrun",
         "ZararEdenUrun",
         "KontrolGereken",
-    ]
-    percent_cols = ["SatisPayiYuzde", "KarOraniYuzde", "KarPayiYuzde"]
-
-    for col in money_cols:
-        if col in display.columns:
-            display[col] = display[col].apply(format_tl)
-
-    for col in number_cols:
+    ]:
         if col in display.columns:
             display[col] = display[col].apply(format_number)
 
-    for col in percent_cols:
+    for col in ["SatisPayiYuzde", "KarOraniYuzde", "KarPayiYuzde"]:
         if col in display.columns:
             display[col] = display[col].apply(format_percent)
 
     return display.rename(columns={
         "AnaKategori": "Ana Kategori",
+        "AltKategori": "Alt Kategori",
         "UrunSayisi": "Ürün Sayısı",
         "SatisSatiri": "Satış Satırı",
         "NetSatisMiktari": "Satış Miktarı",
@@ -255,81 +242,156 @@ def _format_category_summary(df: pd.DataFrame) -> pd.DataFrame:
     })
 
 
-
-def _category_options(df: pd.DataFrame) -> list[str]:
-    categories = (
-        df["AnaKategori"]
-        .fillna("KATEGORİ YOK")
-        .replace("", "KATEGORİ YOK")
-        .astype(str)
-        .sort_values()
-        .unique()
-        .tolist()
-    )
-    return ["TÜM KATEGORİLER"] + categories
-
-
 def _sort_category_products(df: pd.DataFrame, sort_mode: str) -> pd.DataFrame:
     result = df.copy()
 
     if sort_mode == "En yüksek kârlılık oranı":
-        result = result.sort_values(
-            ["BrutKarOraniKdvHaric", "TahminiBrutKarKdvHaric"],
-            ascending=[False, False],
-            na_position="last",
-        )
-    elif sort_mode == "En düşük kârlılık oranı":
-        result = result.sort_values(
-            ["BrutKarOraniKdvHaric", "TahminiBrutKarKdvHaric"],
-            ascending=[True, True],
-            na_position="last",
-        )
-    elif sort_mode == "En yüksek brüt kâr":
-        result = result.sort_values(
-            ["TahminiBrutKarKdvHaric", "NetSatisKdvHaric"],
-            ascending=[False, False],
-            na_position="last",
-        )
-    elif sort_mode == "En düşük brüt kâr / zarar etkisi":
-        result = result.sort_values(
-            ["TahminiBrutKarKdvHaric", "NetSatisKdvHaric"],
-            ascending=[True, False],
-            na_position="last",
-        )
-    elif sort_mode == "En yüksek satış":
-        result = result.sort_values(
-            ["NetSatisKdvHaric", "TahminiBrutKarKdvHaric"],
-            ascending=[False, False],
-            na_position="last",
-        )
-    elif sort_mode == "En düşük satış":
-        result = result.sort_values(
-            ["NetSatisKdvHaric", "TahminiBrutKarKdvHaric"],
-            ascending=[True, False],
-            na_position="last",
-        )
-
+        return result.sort_values(["BrutKarOraniKdvHaric", "TahminiBrutKarKdvHaric"], ascending=[False, False], na_position="last")
+    if sort_mode == "En düşük kârlılık oranı":
+        return result.sort_values(["BrutKarOraniKdvHaric", "TahminiBrutKarKdvHaric"], ascending=[True, True], na_position="last")
+    if sort_mode == "En yüksek brüt kâr":
+        return result.sort_values(["TahminiBrutKarKdvHaric", "NetSatisKdvHaric"], ascending=[False, False], na_position="last")
+    if sort_mode == "En düşük brüt kâr / zarar etkisi":
+        return result.sort_values(["TahminiBrutKarKdvHaric", "NetSatisKdvHaric"], ascending=[True, False], na_position="last")
+    if sort_mode == "En yüksek satış":
+        return result.sort_values(["NetSatisKdvHaric", "TahminiBrutKarKdvHaric"], ascending=[False, False], na_position="last")
+    if sort_mode == "En düşük satış":
+        return result.sort_values(["NetSatisKdvHaric", "TahminiBrutKarKdvHaric"], ascending=[True, False], na_position="last")
     return result
 
 
-def _render_category_filter_analysis(df: pd.DataFrame, report_date: str):
-    st.markdown("### Kategori içi ürün kârlılık analizi")
+def _render_category_profit_tree(df: pd.DataFrame, report_date: str):
+    st.markdown("### Ana kategori bazlı kârlılık dağılımı")
     st.caption(
-        "Burada seçtiğin ana kategorinin içindeki ürünleri kendi içinde sıralayabilirsin. "
-        "Örneğin ALKOLLU ICECK seçip en yüksek veya en düşük kârlılık oranını görebilirsin."
+        "Ana kategoriler aşağıda açılır/kapanır başlıklar olarak gelir. "
+        "Örneğin **ALKOLLU ICECK** başlığını açınca, o ana kategorinin alt kategori kârlılık dağılımını görürsün."
     )
 
-    category_col, sort_col, limit_col = st.columns([2.2, 2.2, 1])
+    category_summary = build_category_summary(df)
+    if category_summary.empty:
+        st.warning("Ana kategori özeti oluşturulamadı.")
+        return
 
-    categories = _category_options(df)
-    selected_category = category_col.selectbox(
-        "Ana kategori",
-        categories,
-        index=0,
-        key=f"daily_category_select_{report_date}",
+    st.markdown("#### Ana kategori genel tablo")
+    st.dataframe(_format_group_summary(category_summary), width="stretch")
+
+    chart_df = category_summary[["AnaKategori", "NetSatisKdvHaric", "TahminiBrutKar"]].copy().set_index("AnaKategori")
+    st.markdown("#### Ana kategori satış / brüt kâr grafiği")
+    st.bar_chart(chart_df)
+
+    st.markdown("#### Ana kategorileri aç/kapat")
+
+    ordered_categories = category_summary.sort_values("NetSatisKdvHaric", ascending=False)
+
+    for _, cat_row in ordered_categories.iterrows():
+        ana = str(cat_row["AnaKategori"])
+        cat_margin = cat_row["KarOraniYuzde"]
+        expander_title = (
+            f"{ana} | Satış: {format_tl(cat_row['NetSatisKdvHaric'])} | "
+            f"Kâr: {format_tl(cat_row['TahminiBrutKar'])} | "
+            f"Oran: {format_percent(cat_margin)} | "
+            f"Satış Payı: {format_percent(cat_row['SatisPayiYuzde'])} | "
+            f"Kontrol: {format_number(cat_row['KontrolGereken'])}"
+        )
+
+        with st.expander(expander_title, expanded=False):
+            cat_df = df[df["AnaKategori"].astype(str) == ana].copy()
+            sub_summary = build_subcategory_summary(cat_df)
+
+            if not sub_summary.empty:
+                sub_summary = sub_summary[sub_summary["AnaKategori"].astype(str) == ana]
+                sub_summary = sub_summary.sort_values("NetSatisKdvHaric", ascending=False)
+
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            m1.metric("Alt Kategori", format_number(cat_df["AltKategori"].nunique()))
+            m2.metric("Ürün", format_number(cat_df["Barkod"].nunique()))
+            m3.metric("Satış KDV Hariç", format_tl(cat_row["NetSatisKdvHaric"]))
+            m4.metric("Tahmini Brüt Kâr", format_tl(cat_row["TahminiBrutKar"]))
+            m5.metric("Kâr Oranı", format_percent(cat_margin))
+            m6.metric("Kontrol Gereken", format_number(cat_row["KontrolGereken"]))
+
+            st.markdown(f"##### {ana} alt kategori kârlılık dağılımı")
+            st.dataframe(_format_group_summary(sub_summary), width="stretch")
+
+            if not sub_summary.empty:
+                sub_chart = sub_summary[["AltKategori", "NetSatisKdvHaric", "TahminiBrutKar"]].copy().set_index("AltKategori")
+                st.bar_chart(sub_chart)
+
+            st.markdown("##### Alt kategorileri aç/kapat")
+            for _, sub_row in sub_summary.sort_values("NetSatisKdvHaric", ascending=False).iterrows():
+                alt = str(sub_row["AltKategori"])
+                sub_title = (
+                    f"{alt} | Satış: {format_tl(sub_row['NetSatisKdvHaric'])} | "
+                    f"Kâr: {format_tl(sub_row['TahminiBrutKar'])} | "
+                    f"Oran: {format_percent(sub_row['KarOraniYuzde'])} | "
+                    f"Kontrol: {format_number(sub_row['KontrolGereken'])}"
+                )
+                with st.expander(sub_title, expanded=False):
+                    sub_df = cat_df[cat_df["AltKategori"].astype(str) == alt].copy()
+
+                    sort_mode = st.selectbox(
+                        "Ürün sıralaması",
+                        [
+                            "En yüksek kârlılık oranı",
+                            "En düşük kârlılık oranı",
+                            "En yüksek brüt kâr",
+                            "En düşük brüt kâr / zarar etkisi",
+                            "En yüksek satış",
+                        ],
+                        index=3,
+                        key=f"sub_sort_{report_date}_{ana}_{alt}",
+                    )
+
+                    sorted_products = _sort_category_products(sub_df, sort_mode)
+
+                    p1, p2, p3, p4, p5 = st.columns(5)
+                    p1.metric("Ürün", format_number(sorted_products["Barkod"].nunique()))
+                    p2.metric("Satış", format_tl(sorted_products["NetSatisKdvHaric"].sum()))
+                    p3.metric("Brüt Kâr", format_tl(sorted_products["TahminiBrutKarKdvHaric"].sum()))
+                    ratio = (
+                        sorted_products["TahminiBrutKarKdvHaric"].sum()
+                        / sorted_products["NetSatisKdvHaric"].sum()
+                        * 100
+                    ) if sorted_products["NetSatisKdvHaric"].sum() else None
+                    p4.metric("Kâr Oranı", format_percent(ratio))
+                    p5.metric("Zarar Eden", format_number((sorted_products["TahminiBrutKarKdvHaric"].fillna(0) < 0).sum()))
+
+                    cols = [
+                        "Barkod",
+                        "UrunAdi",
+                        "Tedarikci",
+                        "AltKategori",
+                        "NetSatisMiktari",
+                        "NetSatisKdvHaric",
+                        "OrtalamaSatisFiyatiKdvHaric",
+                        "KullanilanBirimMaliyetKdvHaric",
+                        "TahminiSatilanMalMaliyetiKdvHaric",
+                        "TahminiBrutKarKdvHaric",
+                        "BrutKarOraniKdvHaric",
+                        "MaliyetSaglikDurumu",
+                    ]
+                    existing = [c for c in cols if c in sorted_products.columns]
+                    st.dataframe(_format_display(sorted_products[existing]), width="stretch")
+
+
+def _render_category_filter_analysis(df: pd.DataFrame, report_date: str):
+    st.markdown("### Filtreli kategori içi ürün listesi")
+    st.caption(
+        "Bu alan ürün listesini filtrelemek için. Ana kategori raporu için ilk sekmedeki açılır/kapanır kategori dağılımını kullan."
     )
 
-    sort_mode = sort_col.selectbox(
+    categories = ["TÜM ANA KATEGORİLER"] + df["AnaKategori"].astype(str).sort_values().unique().tolist()
+    selected_category = st.selectbox("Ana kategori", categories, index=0, key=f"cat_filter_{report_date}_{id(df)}")
+
+    d = df.copy()
+    if selected_category != "TÜM ANA KATEGORİLER":
+        d = d[d["AnaKategori"].astype(str) == selected_category]
+
+    subcats = ["TÜM ALT KATEGORİLER"] + d["AltKategori"].astype(str).sort_values().unique().tolist()
+
+    c1, c2, c3 = st.columns([2, 2, 1])
+    selected_subcategory = c1.selectbox("Alt kategori", subcats, index=0, key=f"subcat_filter_{report_date}_{id(df)}")
+    sort_mode = c2.selectbox(
         "Sıralama",
         [
             "En yüksek kârlılık oranı",
@@ -340,45 +402,27 @@ def _render_category_filter_analysis(df: pd.DataFrame, report_date: str):
             "En düşük satış",
         ],
         index=0,
-        key=f"daily_category_sort_{report_date}",
+        key=f"sort_filter_{report_date}_{id(df)}",
     )
-
-    limit = limit_col.number_input(
-        "Liste adedi",
-        min_value=10,
-        max_value=500,
-        value=100,
-        step=10,
-        key=f"daily_category_limit_{report_date}",
-    )
+    limit = c3.number_input("Liste", min_value=10, max_value=1000, value=100, step=10, key=f"limit_filter_{report_date}_{id(df)}")
 
     f1, f2, f3, f4 = st.columns(4)
-    hide_missing_cost = f1.checkbox(
-        "Maliyeti olmayanları hariç tut",
-        value=False,
-        key=f"daily_hide_missing_{report_date}",
-    )
-    only_loss = f2.checkbox(
-        "Sadece zarar edenler",
-        value=False,
-        key=f"daily_only_loss_{report_date}",
-    )
-    only_suspicious = f3.checkbox(
-        "Sadece şüpheli maliyetler",
-        value=False,
-        key=f"daily_only_suspicious_{report_date}",
-    )
-    only_with_sales = f4.checkbox(
-        "Satışı olanları göster",
-        value=True,
-        key=f"daily_only_sales_{report_date}",
-    )
+    hide_missing_cost = f1.checkbox("Maliyeti olmayanları hariç tut", value=False, key=f"hide_missing_{report_date}_{id(df)}")
+    only_loss = f2.checkbox("Sadece zarar edenler", value=False, key=f"only_loss_{report_date}_{id(df)}")
+    only_suspicious = f3.checkbox("Sadece şüpheli maliyetler", value=False, key=f"only_suspicious_{report_date}_{id(df)}")
+    only_with_sales = f4.checkbox("Satışı olanları göster", value=True, key=f"only_sales_{report_date}_{id(df)}")
 
-    filtered = df.copy()
-    filtered["AnaKategori"] = filtered["AnaKategori"].fillna("KATEGORİ YOK").replace("", "KATEGORİ YOK")
+    search_text = st.text_input(
+        "Ürün adı / barkod içinde ara",
+        value="",
+        placeholder="Örnek: chivas, jack, 869...",
+        key=f"search_filter_{report_date}_{id(df)}",
+    ).strip().lower()
 
-    if selected_category != "TÜM KATEGORİLER":
-        filtered = filtered[filtered["AnaKategori"].astype(str) == selected_category]
+    filtered = d.copy()
+
+    if selected_subcategory != "TÜM ALT KATEGORİLER":
+        filtered = filtered[filtered["AltKategori"].astype(str) == selected_subcategory]
 
     if hide_missing_cost:
         filtered = filtered[filtered["MaliyetEksikMi"].fillna(0) == 0]
@@ -392,6 +436,12 @@ def _render_category_filter_analysis(df: pd.DataFrame, report_date: str):
     if only_with_sales:
         filtered = filtered[filtered["NetSatisKdvHaric"].fillna(0) != 0]
 
+    if search_text:
+        filtered = filtered[
+            filtered["UrunAdi"].fillna("").astype(str).str.lower().str.contains(search_text, na=False)
+            | filtered["Barkod"].fillna("").astype(str).str.lower().str.contains(search_text, na=False)
+        ]
+
     if filtered.empty:
         st.warning("Bu filtrelerle gösterilecek ürün bulunamadı.")
         return
@@ -402,22 +452,14 @@ def _render_category_filter_analysis(df: pd.DataFrame, report_date: str):
     total_profit = filtered["TahminiBrutKarKdvHaric"].sum(skipna=True)
     total_cost = filtered["TahminiSatilanMalMaliyetiKdvHaric"].sum(skipna=True)
     margin = (total_profit / total_sales * 100) if total_sales else None
-    missing_count = int(filtered["MaliyetEksikMi"].fillna(0).sum())
     loss_count = int((filtered["TahminiBrutKarKdvHaric"].fillna(0) < 0).sum())
-    suspicious_count = int(filtered["SupheliMaliyetMi"].fillna(0).sum())
 
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Seçili Ürün", format_number(len(filtered)))
     m2.metric("Satış KDV Hariç", format_tl(total_sales))
     m3.metric("Tahmini Maliyet", format_tl(total_cost))
     m4.metric("Tahmini Brüt Kâr", format_tl(total_profit))
     m5.metric("Kâr Oranı", format_percent(margin))
-    m6.metric("Zarar Eden", format_number(loss_count))
-
-    m7, m8, m9 = st.columns(3)
-    m7.metric("Maliyeti Olmayan", format_number(missing_count))
-    m8.metric("Şüpheli Maliyet", format_number(suspicious_count))
-    m9.metric("Seçilen Kategori", selected_category[:28])
 
     cols = [
         "Barkod",
@@ -435,21 +477,11 @@ def _render_category_filter_analysis(df: pd.DataFrame, report_date: str):
         "TahminiSatilanMalMaliyetiKdvHaric",
         "TahminiBrutKarKdvHaric",
         "BrutKarOraniKdvHaric",
-        "KullanilanMaliyetSatisOrani",
         "MaliyetSaglikDurumu",
-        "MaliyetEksikMi",
-        "SupheliMaliyetMi",
     ]
     existing = [c for c in cols if c in filtered.columns]
-
     st.dataframe(_format_display(filtered[existing].head(int(limit))), width="stretch")
 
-    chart_source = filtered.head(min(int(limit), 50)).copy()
-    if not chart_source.empty:
-        chart_df = chart_source[["UrunAdi", "NetSatisKdvHaric", "TahminiBrutKarKdvHaric"]].copy()
-        chart_df = chart_df.set_index("UrunAdi")
-        st.markdown("### Seçili liste satış / brüt kâr grafiği")
-        st.bar_chart(chart_df)
 
 def render_daily_profit(df: pd.DataFrame, report_date: str, show_summary: bool = True):
     if df.empty:
@@ -521,14 +553,13 @@ def render_daily_profit(df: pd.DataFrame, report_date: str, show_summary: bool =
             c20.metric("Kategori Brüt Kârı", format_tl(best_category["TahminiBrutKar"]))
 
     st.warning(
-        "Bu rapor net kâr değildir. Şu anda amaç: günlük satışları, maliyeti olmayan ürünleri, zarar eden ürünleri "
-        "ve şüpheli maliyetleri ayrı ayrı denetlemek. Tahmini kâr, stok kartı MALIYET / ALISFIYATI baz alınarak hesaplanır. "
-        "Son alış maliyeti sadece kıyas ve şüpheli maliyet tespiti için gösterilir."
+        "Bu rapor net kâr değildir. Amaç: günlük satışları ana kategori ve alt kategori bazında ayırmak, "
+        "kârlılık dağılımını ve maliyet sorunlarını denetlemek."
     )
 
     tabs = st.tabs([
-        "Ana kategori özeti",
-        "Kategori içi analiz",
+        "Ana kategori kârlılık dağılımı",
+        "Filtreli ürün listesi",
         f"Maliyeti olmayanlar ({missing_cost_count})",
         f"Zarar eden ürünler ({loss_count})",
         f"Şüpheli maliyetler ({suspicious_count})",
@@ -542,105 +573,51 @@ def render_daily_profit(df: pd.DataFrame, report_date: str, show_summary: bool =
     top_profit = df.sort_values("TahminiBrutKarKdvHaric", ascending=False).head(50)
 
     with tabs[0]:
-        st.markdown("### Ana kategori bazlı günlük satış ve kârlılık")
-        st.caption(
-            "Bu tablo, günlük satışı ana kategoriye göre ayırır. "
-            "Satış payı ve kâr oranı sayesinde hangi kategorinin günü taşıdığını veya bozduğunu görürüz."
-        )
-        if category_summary.empty:
-            st.warning("Ana kategori özeti oluşturulamadı.")
-        else:
-            st.dataframe(_format_category_summary(category_summary), width="stretch")
-
-            chart_df = category_summary[["AnaKategori", "NetSatisKdvHaric", "TahminiBrutKar"]].copy()
-            chart_df = chart_df.set_index("AnaKategori")
-            st.markdown("### Ana kategori satış / brüt kâr grafiği")
-            st.bar_chart(chart_df)
+        _render_category_profit_tree(df, report_date)
 
     with tabs[1]:
         _render_category_filter_analysis(df, report_date)
 
     with tabs[2]:
         st.markdown("### Maliyeti olmayan ürünler")
-        st.caption("Bu ürünlerde stok kartı maliyet, stok kartı alış fiyatı ve son alış faturası maliyeti bulunamadı.")
         cols = [
-            "Barkod",
-            "UrunAdi",
-            "Tedarikci",
-            "AnaKategori",
-            "AltKategori",
-            "NetSatisMiktari",
-            "NetSatisKdvDahil",
-            "NetSatisKdvHaric",
-            "KartMaliyet",
-            "KartAlisFiyati",
-            "SonAlisBirimMaliyetKdvHaric",
-            "KullanilanMaliyetKaynak",
-            "MaliyetSaglikDurumu",
+            "Barkod", "UrunAdi", "Tedarikci", "AnaKategori", "AltKategori",
+            "NetSatisMiktari", "NetSatisKdvDahil", "NetSatisKdvHaric",
+            "KartMaliyet", "KartAlisFiyati", "SonAlisBirimMaliyetKdvHaric",
+            "KullanilanMaliyetKaynak", "MaliyetSaglikDurumu",
         ]
-        existing = [c for c in cols if c in missing_cost.columns]
-        _show_table(missing_cost[existing].copy() if existing else missing_cost, "Maliyeti olmayan ürün yok.")
+        _show_table(missing_cost[[c for c in cols if c in missing_cost.columns]].copy(), "Maliyeti olmayan ürün yok.")
 
     with tabs[3]:
         st.markdown("### Zarar eden ürünler")
-        st.caption("Stok kartı bazlı tahmini brüt kârı negatif olan ürünler.")
         cols = [
-            "Barkod",
-            "UrunAdi",
-            "Tedarikci",
-            "AnaKategori",
-            "AltKategori",
-            "NetSatisMiktari",
-            "NetSatisKdvHaric",
-            "OrtalamaSatisFiyatiKdvHaric",
-            "KullanilanBirimMaliyetKdvHaric",
-            "KullanilanMaliyetKaynak",
-            "TahminiSatilanMalMaliyetiKdvHaric",
-            "TahminiBrutKarKdvHaric",
-            "BrutKarOraniKdvHaric",
-            "KartMaliyet",
-            "KartAlisFiyati",
-            "SonAlisBirimMaliyetKdvHaric",
-            "KullanilanMaliyetSatisOrani",
+            "Barkod", "UrunAdi", "Tedarikci", "AnaKategori", "AltKategori",
+            "NetSatisMiktari", "NetSatisKdvHaric", "OrtalamaSatisFiyatiKdvHaric",
+            "KullanilanBirimMaliyetKdvHaric", "KullanilanMaliyetKaynak",
+            "TahminiSatilanMalMaliyetiKdvHaric", "TahminiBrutKarKdvHaric",
+            "BrutKarOraniKdvHaric", "KartMaliyet", "KartAlisFiyati",
+            "SonAlisBirimMaliyetKdvHaric", "KullanilanMaliyetSatisOrani",
             "MaliyetSaglikDurumu",
         ]
-        existing = [c for c in cols if c in loss_products.columns]
         loss_sorted = loss_products.sort_values("TahminiBrutKarKdvHaric", ascending=True)
-        _show_table(loss_sorted[existing].copy() if existing else loss_sorted, "Zarar eden ürün yok.")
+        _show_table(loss_sorted[[c for c in cols if c in loss_sorted.columns]].copy(), "Zarar eden ürün yok.")
 
     with tabs[4]:
         st.markdown("### Şüpheli maliyetler")
-        st.caption("Maliyet satış fiyatından yüksek / satış fiyatına çok yakın / son alış ile stok kartı maliyeti çok farklı olan ürünler.")
         cols = [
-            "Barkod",
-            "UrunAdi",
-            "Tedarikci",
-            "AnaKategori",
-            "AltKategori",
-            "NetSatisMiktari",
-            "NetSatisKdvHaric",
-            "OrtalamaSatisFiyatiKdvHaric",
-            "KartMaliyet",
-            "KartAlisFiyati",
-            "SonAlisBirimMaliyetKdvHaric",
-            "KullanilanBirimMaliyetKdvHaric",
-            "KullanilanMaliyetKaynak",
-            "KullanilanMaliyetSatisOrani",
-            "SonAlisSatisOrani",
-            "SonAlisKartMaliyetFarkYuzde",
-            "TahminiBrutKarKdvHaric",
+            "Barkod", "UrunAdi", "Tedarikci", "AnaKategori", "AltKategori",
+            "NetSatisMiktari", "NetSatisKdvHaric", "OrtalamaSatisFiyatiKdvHaric",
+            "KartMaliyet", "KartAlisFiyati", "SonAlisBirimMaliyetKdvHaric",
+            "KullanilanBirimMaliyetKdvHaric", "KullanilanMaliyetKaynak",
+            "KullanilanMaliyetSatisOrani", "SonAlisSatisOrani",
+            "SonAlisKartMaliyetFarkYuzde", "TahminiBrutKarKdvHaric",
             "MaliyetSaglikDurumu",
         ]
-        existing = [c for c in cols if c in suspicious.columns]
-        suspicious_sorted = suspicious.sort_values(
-            ["MaliyetSaglikDurumu", "TahminiBrutKarKdvHaric"],
-            ascending=[True, True],
-        )
-        _show_table(suspicious_sorted[existing].copy() if existing else suspicious_sorted, "Şüpheli maliyet işaretlenen ürün yok.")
+        suspicious_sorted = suspicious.sort_values(["MaliyetSaglikDurumu", "TahminiBrutKarKdvHaric"], ascending=[True, True])
+        _show_table(suspicious_sorted[[c for c in cols if c in suspicious_sorted.columns]].copy(), "Şüpheli maliyet işaretlenen ürün yok.")
 
     with tabs[5]:
         st.markdown("### Kârlılığı en çok bozan ürünler")
-        st.caption("Tüm ürünler içinden tahmini brüt kârı en düşük olan ilk 50 ürün.")
         _show_table(zarar, "Zarar etkisi gösterilecek ürün yok.")
 
     with tabs[6]:
@@ -650,26 +627,14 @@ def render_daily_profit(df: pd.DataFrame, report_date: str, show_summary: bool =
     with tabs[7]:
         st.markdown("### Stok kartı maliyeti / son alış maliyeti kıyası")
         cols = [
-            "Barkod",
-            "UrunAdi",
-            "NetSatisMiktari",
-            "OrtalamaSatisFiyatiKdvHaric",
-            "KartMaliyet",
-            "KartAlisFiyati",
-            "SonAlisBirimMaliyetKdvHaric",
-            "KullanilanBirimMaliyetKdvHaric",
-            "KullanilanMaliyetKaynak",
-            "KullanilanMaliyetSatisOrani",
-            "SonAlisSatisOrani",
-            "SonAlisKartMaliyetFarkYuzde",
-            "MaliyetSaglikDurumu",
+            "Barkod", "UrunAdi", "NetSatisMiktari", "OrtalamaSatisFiyatiKdvHaric",
+            "KartMaliyet", "KartAlisFiyati", "SonAlisBirimMaliyetKdvHaric",
+            "KullanilanBirimMaliyetKdvHaric", "KullanilanMaliyetKaynak",
+            "KullanilanMaliyetSatisOrani", "SonAlisSatisOrani",
+            "SonAlisKartMaliyetFarkYuzde", "MaliyetSaglikDurumu",
         ]
-        existing = [c for c in cols if c in df.columns]
-        compare = df[existing].copy()
-        compare = compare.sort_values(
-            ["MaliyetSaglikDurumu", "KullanilanMaliyetSatisOrani"],
-            ascending=[True, False],
-        )
+        compare = df[[c for c in cols if c in df.columns]].copy()
+        compare = compare.sort_values(["MaliyetSaglikDurumu", "KullanilanMaliyetSatisOrani"], ascending=[True, False])
         _show_table(compare, "Maliyet kıyası için veri yok.")
 
     with tabs[8]:
