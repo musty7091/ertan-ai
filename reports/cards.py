@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Net cevap karti: her rapor icin 4-5 kilit sayi + kisa yorum + katlanir detay.
-Kartlar sohbet gecmisinde saklanip yeniden cizilebilir (df kartin icinde tasinir).
+Net cevap karti: her rapor icin kilit sayilar + kisa yorum + katlanir detay.
 """
 
 import streamlit as st
 
-from core.comments import comment_category, comment_product_360, comment_product_yearly
+from core.comments import comment_category, comment_daily_profit, comment_product_360, comment_product_yearly
 from core.config import get_report_year
 from core.formatting import format_number, format_percent, format_tl, safe_float
 
@@ -75,8 +74,43 @@ def build_category_card(df, category: str) -> dict:
     }
 
 
+def build_daily_profit_card(df, report_date: str) -> dict:
+    toplam_satis = df["NetSatisKdvHaric"].sum()
+    toplam_satis_dahil = df["NetSatisKdvDahil"].sum()
+    toplam_maliyet = df["TahminiSatilanMalMaliyetiKdvHaric"].sum()
+    toplam_kar = df["TahminiBrutKarKdvHaric"].sum()
+    oran = (safe_float(toplam_kar) / safe_float(toplam_satis) * 100) if safe_float(toplam_satis) else None
+
+    maliyet_eksik = int(df["MaliyetEksikMi"].fillna(0).sum()) if "MaliyetEksikMi" in df.columns else 0
+    supheli = int(df["SupheliMaliyetMi"].fillna(0).sum()) if "SupheliMaliyetMi" in df.columns else 0
+    zarar_eden = int((df["TahminiBrutKarKdvHaric"].fillna(0) < 0).sum()) if "TahminiBrutKarKdvHaric" in df.columns else 0
+    zarar_toplam = df.loc[df["TahminiBrutKarKdvHaric"].fillna(0) < 0, "TahminiBrutKarKdvHaric"].sum() if "TahminiBrutKarKdvHaric" in df.columns else 0
+    kategori_sayisi = df["AnaKategori"].fillna("KATEGORİ YOK").nunique() if "AnaKategori" in df.columns else 0
+
+    return {
+        "report_type": "daily_profit",
+        "title": f"🧾 {report_date}",
+        "subtitle": "Günlük Satış ve Maliyet Sağlık Kontrolü",
+        "metrics": [
+            ("Satış KDV Dahil", format_tl(toplam_satis_dahil)),
+            ("Satış KDV Hariç", format_tl(toplam_satis)),
+            ("Tahmini Brüt Kâr", format_tl(toplam_kar)),
+            ("Tahmini Kâr Oranı", format_percent(oran)),
+            ("Maliyeti Yok", str(maliyet_eksik)),
+            ("Zarar Eden", str(zarar_eden)),
+            ("Şüpheli", str(supheli)),
+            ("Zarar Etkisi", format_tl(zarar_toplam)),
+            ("Ana Kategori", str(kategori_sayisi)),
+        ],
+        "comments": comment_daily_profit(df, report_date),
+        "df": df,
+        "extra": {"report_date": report_date},
+    }
+
+
 def render_card(card: dict):
     from reports.category_profit import render_category_profit
+    from reports.daily_profit import render_daily_profit
     from reports.product_360 import render_product_360
     from reports.product_yearly import render_product_yearly
 
@@ -93,10 +127,18 @@ def render_card(card: dict):
             icon = {"success": "✅", "warning": "⚠️", "info": "💬"}.get(level, "💬")
             st.markdown(f"{icon} {text}")
 
-        with st.expander("🔎 Tüm detaylar"):
-            if card["report_type"] == "product_360":
-                render_product_360(card["df"])
-            elif card["report_type"] == "product_yearly":
-                render_product_yearly(card["df"])
-            elif card["report_type"] == "category_profit":
-                render_category_profit(card["df"], card["extra"].get("category", ""))
+        if card["report_type"] == "daily_profit":
+            st.divider()
+            render_daily_profit(
+                card["df"],
+                card["extra"].get("report_date", ""),
+                show_summary=False,
+            )
+        else:
+            with st.expander("🔎 Tüm detaylar"):
+                if card["report_type"] == "product_360":
+                    render_product_360(card["df"])
+                elif card["report_type"] == "product_yearly":
+                    render_product_yearly(card["df"])
+                elif card["report_type"] == "category_profit":
+                    render_category_profit(card["df"], card["extra"].get("category", ""))

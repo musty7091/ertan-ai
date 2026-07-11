@@ -10,6 +10,7 @@ from reports.cards import (
     render_card,
 )
 from reports.category_profit import run_category_profit
+from reports.daily_profit import render_daily_profit, run_daily_profit
 from reports.product_360 import run_product_360
 from reports.product_search import find_product_cached, fuzzy_find
 from reports.product_yearly import run_product_yearly
@@ -18,16 +19,46 @@ from reports.product_yearly import run_product_yearly
 st.set_page_config(
     page_title="Ertan Market Veri Asistanı",
     page_icon="📊",
-    layout="centered",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown(
     """
     <style>
     #MainMenu, footer {visibility: hidden;}
-    [data-testid="stMetricValue"] {font-size: 1.15rem;}
-    [data-testid="stMetricLabel"] {font-size: 0.75rem;}
-    .block-container {padding-top: 2rem;}
+
+    .block-container {
+        max-width: 95vw !important;
+        padding-top: 2rem !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+        padding-bottom: 6rem !important;
+    }
+
+    [data-testid="stMetricValue"] {
+        font-size: 1.15rem;
+    }
+
+    [data-testid="stMetricLabel"] {
+        font-size: 0.75rem;
+    }
+
+    [data-testid="stDataFrame"] {
+        width: 100% !important;
+    }
+
+    div[data-testid="stVerticalBlock"] {
+        gap: 0.75rem;
+    }
+
+    @media (max-width: 900px) {
+        .block-container {
+            max-width: 100vw !important;
+            padding-left: 0.75rem !important;
+            padding-right: 0.75rem !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -36,9 +67,9 @@ st.markdown(
 
 # ---------- durum ----------
 if "history" not in st.session_state:
-    st.session_state.history = []  # {"role": "user"/"assistant", "text": str} veya {"role": "assistant", "card": dict}
+    st.session_state.history = []
 if "pending_picker" not in st.session_state:
-    st.session_state.pending_picker = None  # {"intent_report": str, "products": df}
+    st.session_state.pending_picker = None
 
 
 def add_user(text: str):
@@ -51,6 +82,20 @@ def add_text(text: str, level: str = "info"):
 
 def add_card(card: dict):
     st.session_state.history.append({"role": "assistant", "card": card})
+
+
+def add_daily_report(df, report_date: str):
+    # Günlük raporu kart/expander içine gömmüyoruz.
+    # Sekmeler doğrudan görünür olsun diye ayrı history tipi.
+    st.session_state.history.append(
+        {
+            "role": "assistant",
+            "daily_report": {
+                "df": df,
+                "report_date": report_date,
+            },
+        }
+    )
 
 
 # ---------- rapor calistirma ----------
@@ -75,6 +120,17 @@ def process_question(question: str):
         intent = parse_question(question)
         conn = get_connection()
 
+        if intent.report_type == "daily_profit":
+            if not intent.report_date:
+                add_text("Tarih anlayamadım. Örnek: *08.07.2026 net kârlılık*", "warning")
+                return
+            df = run_daily_profit(conn, intent.report_date)
+            if df.empty:
+                add_text(f"{intent.report_date} tarihi için satış verisi bulunamadı.", "warning")
+                return
+            add_daily_report(df, intent.report_date)
+            return
+
         if intent.report_type == "category_profit":
             if not intent.category:
                 add_text("Kategori anlayamadım. Örnek: *Whiskey kategorisinde en kârlı ürünler*", "warning")
@@ -92,7 +148,6 @@ def process_question(question: str):
             product_text=intent.product_text,
         )
 
-        # LIKE bulamadiysa bulanik arama dene
         fuzzy_used = False
         if products.empty and intent.product_text:
             products = fuzzy_find(conn, intent.product_text)
@@ -127,6 +182,8 @@ st.caption(f"Rapor yılı: {get_report_year()} · Sohbet eder gibi sor, net ceva
 with st.sidebar:
     st.header("Hızlı Sorular")
     examples = [
+        "08.07.2026 net kârlılık",
+        "2026-07-08 günlük kâr",
         "5099873090183 analiz et",
         "Jack Daniels 1LT analiz et",
         "080432400395 son yıllar alış satış",
@@ -149,7 +206,14 @@ with st.sidebar:
 # ---------- gecmisi ciz ----------
 for entry in st.session_state.history:
     with st.chat_message(entry["role"]):
-        if "card" in entry:
+        if "daily_report" in entry:
+            st.markdown("**🧾 Günlük Satış ve Maliyet Sağlık Kontrolü**")
+            render_daily_profit(
+                entry["daily_report"]["df"],
+                entry["daily_report"]["report_date"],
+                show_summary=True,
+            )
+        elif "card" in entry:
             render_card(entry["card"])
         else:
             if entry.get("level") == "warning":
@@ -157,7 +221,8 @@ for entry in st.session_state.history:
             else:
                 st.markdown(entry["text"])
 
-# ---------- urun secici (bekleyen) ----------
+
+# ---------- urun secici ----------
 picker = st.session_state.pending_picker
 if picker is not None:
     with st.chat_message("assistant"):
@@ -182,8 +247,9 @@ if picker is not None:
                     conn.close()
             st.rerun()
 
+
 # ---------- giris ----------
-question = st.chat_input("Örnek: Chivas 12 son yıllar alış satış")
+question = st.chat_input("Örnek: 08.07.2026 net kârlılık")
 
 if "pending_question" in st.session_state:
     question = st.session_state.pop("pending_question")
@@ -195,4 +261,4 @@ if question:
     st.rerun()
 
 if not st.session_state.history and picker is None:
-    st.info("Başlamak için barkod, ürün adı veya kategori yaz. Yazım hatası dert değil — *'jack danials'* bile bulunur. 😉")
+    st.info("Başlamak için tarih, barkod, ürün adı veya kategori yaz. Örnek: *08.07.2026 net kârlılık*")
